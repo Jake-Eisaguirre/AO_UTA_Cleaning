@@ -13,8 +13,9 @@ if (!require(librarian)){
 }
 
 # Load necessary packages using librarian, ensuring they are installed if missing
-librarian::shelf(tidyverse, here, DBI, odbc, readxl, purrr, janitor, lubridate)
+librarian::shelf(tidyverse, here, DBI, odbc, readxl, purrr, janitor, lubridate, furrr, future, writexl)
 ```
+Data Path: "\\nas01\depts\Share\Airport Operations\UTAData"
 
 ## File Path for Data
 ```{r}
@@ -34,14 +35,22 @@ dynamic_data <- " "
 # List all valid .xlsx files, excluding temporary and hidden files
 static_files_2024 <- list.files(static_data_2024, pattern = "^[^~].*\\.xlsx$", full.names = TRUE)
 
-# Read and combine all .xlsx files
-static_combined_data_2024 <- static_files_2024 %>%
-  lapply(read_excel) %>%           # Read each Excel file into a list of data frames
-  bind_rows()                      # Combine all data frames into a single data frame
+# Initialize an empty list to store data frames
+data_list <- list()
 
-static_combined_data_2024 <- static_combined_data_2024 %>% 
-  select(!c("1"))
+# Read each file with a print statement
+for (file in static_files_2024) {
+  message(paste("Reading file:", file)) # Print the current file being read
+  
+  # Read the Excel file and store it in the list
+  data_list[[file]] <- read_excel(file)
+}
 
+# Combine all data frames into a single data frame
+static_combined_data_2024 <- bind_rows(data_list) %>%
+  select(!c("1")) # Exclude the column named "1"
+
+message("All files have been read and combined!")
 ```
 
 ## Loop through Static 2023 Data
@@ -101,17 +110,259 @@ clean_static_data <- raw_static_data %>%
   select(!c(work_summary_work_date_formatted, filter_date)) %>% 
   relocate(year_month, .after = work_summary_work_date)
 
+#write_csv(clean_static_data, here("data", "clean_static_data.csv"))
 ```
+
 
 ## Write back to Mels folder
 ```{r}
 
-date <- Sys.Date()
-
-date <- str_remove_all(date, "-")
-  
-
-write_csv(clean_static_data, paste0("D:/StaffPlanner/Rosare/UTA Data/ME Final/All_Combined_Static/All_Combined_Static", date, ".csv"))
+# date <- Sys.Date()
+# 
+# date <- str_remove_all(date, "-")
+#   
+# 
+# write_csv(clean_static_data, paste0("D:/StaffPlanner/Rosare/UTA Data/ME Final/All_Combined_Static/All_Combined_Static", date, ".csv"))
 
 
 ```
+
+## Read in clean data
+```{r}
+
+clean_static_data <- read_csv(here("data", "clean_static_data.csv")) %>% 
+  filter(!time_code_name == "CHIEF")
+
+as_bin_key <- read_csv(here("masters", "as_bin_key.csv")) %>% 
+  mutate(Key = as.character(Key)) %>% 
+  rename(AS_Code_Key = Key)
+
+ha_bin_key <- read_csv(here("masters", "ha_bin_key.csv"))
+
+stations <- read_csv(here("masters", "stations.csv")) %>% 
+  clean_names() %>% 
+  select(dept_name, station, workgroup)
+
+forecast_data <- read_csv(here("data", "budget.csv")) %>% 
+  clean_names()  %>% 
+  mutate(month = format(mdy(month), "%Y-%m")) %>% 
+  select(-matches("pt|ft")) %>% 
+  rename(year_month = month) %>% 
+  select(station, department, year_month, total_hours_bud, total_sick_hours_bud, total_vac_hours_bud, total_training_hours_bud)
+
+```
+
+
+## Join bin key
+```{r}
+
+tasks_binned_as <- clean_static_data %>% 
+  left_join(ha_bin_key) %>% 
+  left_join(as_bin_key) %>% 
+  drop_na("AS Categories") %>% 
+  rename(as_task_bins = "AS Categories") %>% 
+  inner_join(stations, by = c("dept" = "dept_name")) %>% 
+  left_join()
+
+
+
+```
+
+
+```{r}
+
+agg_data <- tasks_binned_as %>% 
+  #mutate(month = month(work_summary_work_date)) %>% 
+  group_by(work_summary_work_date, as_task_bins, broad_cat, station, workgroup) %>% 
+  reframe(hours = as.integer(sum(work_detail_hours)))
+
+
+```
+
+
+```{r}
+
+write_xlsx(agg_data, "Z:/OperationsResourcePlanningAnalysis/UTA_AO/static_agzg.xlsx")
+
+
+
+
+```
+
+
+## Daily Test
+```{r}
+library(dplyr)
+library(readr)
+library(janitor)
+library(lubridate)
+
+# Read the clean_static_data
+clean_static_data <- read_csv(here("data", "clean_static_data.csv")) %>% 
+  mutate(work_summary_work_date = as.Date(work_summary_work_date),
+         work_summary_start_time = as.POSIXct(work_summary_start_time, format = "%Y-%m-%dT%H:%M:%S"),
+         work_summary_end_time = as.POSIXct(work_summary_end_time, format = "%Y-%m-%dT%H:%M:%S"),
+         work_detail_start_time = as.POSIXct(work_detail_start_time, format = "%Y-%m-%dT%H:%M:%S"),
+         work_detail_end_time = as.POSIXct(work_detail_end_time, format = "%Y-%m-%dT%H:%M:%S"))
+
+# Get list of files from the 2024 directory
+file_list <- list.files("//nas01/depts/Share/Airport Operations/UTAData/Archive/", 
+                        full.names = TRUE, recursive = TRUE, pattern = "\\.csv$")
+
+# Filter the files to exclude unwanted ones, such as files from 2022
+file_list <- list.files("//nas01/depts/Share/Airport Operations/UTAData/Archive/", pattern = "*.csv", full.names = TRUE, recursive = TRUE) %>%
+  .[!grepl("AirportOps_Daily_Hours_Fake Data.csv$", .)] %>%
+  .[!grepl("EOM Archive", .)] %>%
+  .[!grepl("/2022/", .)]
+
+# Extract dates from filenames (assuming filenames are like 'AirportOps_Daily_Hours_20240101.csv')
+file_dates <- gsub(".*_(\\d{8})\\.csv$", "\\1", basename(file_list))
+file_dates <- as.Date(file_dates, format = "%Y%m%d")
+
+# Keep the 70 most recent files (sort by date)
+file_list <- file_list[order(file_dates, decreasing = TRUE)][1:45]
+
+# Loop through the files and compare with clean_static_data
+for (file in file_list) {
+  
+  # Read the current file
+  current_data <- read_csv(file, col_types = cols()) %>%
+    clean_names() %>%
+    mutate(
+      # Clean and parse the work_summary_work_date
+      work_summary_work_date = str_squish(work_summary_work_date),
+      work_summary_work_date = str_sub(work_summary_work_date, 1, 11),
+      work_summary_work_date = str_squish(work_summary_work_date),
+      work_summary_work_date = mdy(work_summary_work_date),
+      work_summary_work_date_formatted = format(work_summary_work_date, "%Y-%m-%d"),
+      
+      # Parse start and end times to POSIXct (no format here)
+      work_summary_start_time = mdy_hm(work_summary_start_time),
+      work_summary_end_time = mdy_hm(work_summary_end_time),
+      work_detail_start_time = mdy_hm(work_detail_start_time),
+      work_detail_end_time = mdy_hm(work_detail_end_time),
+      
+      # Create year_month column
+      year_month = format(work_summary_work_date, "%Y-%m")
+    ) %>% 
+    # Remove unwanted columns
+    select(-work_summary_work_date_formatted) %>% 
+    relocate(year_month, .after = work_summary_work_date)
+  
+  # Ensure the datetime columns are of the same type as clean_static_data
+  current_data <- current_data %>%
+    mutate(
+      project_code = as.double(project_code),  # Convert project_code to double
+      work_summary_start_time = as.POSIXct(work_summary_start_time, format = "%Y-%m-%dT%H:%M:%S"),
+      work_summary_end_time = as.POSIXct(work_summary_end_time, format = "%Y-%m-%dT%H:%M:%S"),
+      work_detail_start_time = as.POSIXct(work_detail_start_time, format = "%Y-%m-%dT%H:%M:%S"),
+      work_detail_end_time = as.POSIXct(work_detail_end_time, format = "%Y-%m-%dT%H:%M:%S")
+    )
+  
+  # Compare current file with clean_static_data and keep only records not already in clean_static_data
+  new_data <- anti_join(current_data, clean_static_data, by = c("employee_id", "work_summary_work_date"))
+  
+  # Add the new records to clean_static_data
+  clean_static_data <- bind_rows(clean_static_data, new_data)
+  
+  # Print which file has been processed
+  print(paste("Processed file:", file))
+}
+
+# Save the updated clean_static_data
+write.csv(clean_static_data, here("data", "updated_clean_static_data.csv"), row.names = FALSE)
+
+```
+
+```{r}
+
+clean_static_data <- read_csv(here("data", "updated_clean_static_data.csv"))
+
+as_bin_key <- read_csv(here("masters", "as_bin_key.csv")) %>% 
+  mutate(Key = as.character(Key)) %>% 
+  rename(AS_Code_Key = Key)
+
+ha_bin_key <- read_csv(here("masters", "ha_bin_key.csv"))
+
+stations <- read_csv(here("masters", "stations.csv")) %>% 
+  clean_names() %>% 
+  select(dept_name, station, workgroup)
+
+
+tasks_binned_as <- clean_static_data %>% 
+  left_join(ha_bin_key) %>% 
+  left_join(as_bin_key) %>% 
+  drop_na("AS Categories") %>% 
+  rename(as_task_bins = "AS Categories") %>% 
+  inner_join(stations, by = c("dept" = "dept_name")) 
+
+
+
+forecast_data <- read_csv(here("data", "budget.csv")) %>% 
+  clean_names()  %>% 
+  mutate(month = format(mdy(month), "%Y-%m")) %>% 
+  select(-matches("pt|ft")) %>% 
+  rename(year_month = month) %>% 
+  select(station, department, year_month, days_in_month, 
+         total_hours_bud, total_sick_hours_bud, total_vac_hours_bud, total_training_hours_bud) %>% 
+  rename("Regular Hours" = total_hours_bud,
+         "Sick Leave" = total_sick_hours_bud,
+         "Vacation" = total_vac_hours_bud,
+         "Training" = total_training_hours_bud) %>% 
+  mutate("Actual vs Forecasted" = "Forecasted") %>% 
+    pivot_longer(
+    cols = `Regular Hours`:Training, # Select columns to pivot
+    names_to = "as_task_bins",       # New column for variable names
+    values_to = "hours"              # New column for values
+  ) %>% 
+  group_by(station, year_month, as_task_bins) %>% 
+  mutate(hours = sum(hours)) %>% 
+  reframe(
+          "Forecast Hours" = round(hours/days_in_month, 0)) %>% 
+  distinct()
+
+
+agg_data <- tasks_binned_as %>%
+  mutate(year_month = format(work_summary_work_date, "%Y-%m")) %>%
+  group_by(work_summary_work_date,year_month, as_task_bins, broad_cat, station) %>% # add work group
+  reframe("Actual Hours" = as.integer(sum(work_detail_hours))) %>% 
+  left_join(forecast_data)
+
+task_bins_mapping <- as_bin_key %>%
+  select("AS Categories", broad_cat) %>% 
+  rename(as_task_bins = "AS Categories")
+
+# Create a full grid of dates and task bins
+full_dates_task_bins <- expand.grid(
+  work_summary_work_date = unique(agg_data$work_summary_work_date),
+  as_task_bins = unique(task_bins_mapping$as_task_bins),
+  station = unique(agg_data$station),
+  stringsAsFactors = FALSE
+) %>%
+  left_join(task_bins_mapping, by = "as_task_bins")  # Ensure task bins match their broad_cat
+
+# Join with the original data and fill missing hours with zero
+agg_data_complete <- full_dates_task_bins %>%
+  left_join(agg_data, by = c("work_summary_work_date", "as_task_bins", "broad_cat", "station")) %>% 
+    mutate(
+    year_month = ifelse(is.na(year_month), 
+                        format(as.Date(work_summary_work_date), "%Y-%m"), 
+                        year_month),
+    # Replace NA values in Actual Hours and Forecast Hours with 0
+    `Actual Hours` = ifelse(is.na(`Actual Hours`), 0, `Actual Hours`),
+    `Forecast Hours` = ifelse(is.na(`Forecast Hours`), 0, `Forecast Hours`)
+  )%>%
+  pivot_longer(
+    cols = c(`Actual Hours`, `Forecast Hours`), # Specify the columns to pivot
+    names_to = "Actual vs Forecast",                        # New column for the column names
+    values_to = "hours"                        # New column for the values
+  )
+
+
+write_xlsx(agg_data_complete, "Z:/OperationsResourcePlanningAnalysis/UTA_AO/daily_agg.xlsx")
+
+#write_csv(agg_data, here("daily_agg_uta.csv"))
+
+```
+
+
