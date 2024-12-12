@@ -273,6 +273,11 @@ for (file in file_list) {
 write.csv(clean_static_data, here("data", "updated_clean_static_data.csv"), row.names = FALSE)
 
 ```
+# ramp = ramp
+# cleaner = cleanre
+# GS = J9-AGENTSPECIALIST, Y61-CHIEF MAINLAND CSR, J3E2-CUSTOMER SVC CHIEF AGENT, J5E2-CUSTOMER SVC AGENT
+# Weight & Balance = weight
+# Line Service = Line Serviceman
 
 ```{r}
 
@@ -294,7 +299,16 @@ tasks_binned_as <- clean_static_data %>%
   left_join(as_bin_key) %>% 
   drop_na("AS Categories") %>% 
   rename(as_task_bins = "AS Categories") %>% 
-  inner_join(stations, by = c("dept" = "dept_name")) 
+  inner_join(stations, by = c("dept" = "dept_name")) %>% 
+  mutate(department = if_else(str_detect(job_desc, "RAMP"), "RAMP", NA),
+         department = if_else(str_detect(job_desc, "CLEANER"), "CLEANER", department),
+         department = if_else(job_desc %in% c("J9-AGENTSPECIALIST", 
+                                              "Y61-CHIEF MAINLAND CSR",
+                                              "J3E2-CUSTOMER SVC CHIEF AGENT",
+                                              "J5E2-CUSTOMER SVC AGENT"), "GS", department),
+         department = if_else(str_detect(job_desc, "WEIGHT"), "WEIGHT", department),
+         department = if_else(str_detect(job_desc, "LINE SERVICEMAN"), "LINE SERVICEMAN", department)) %>% 
+  filter(!is.na(department))
 
 
 
@@ -315,18 +329,19 @@ forecast_data <- read_csv(here("data", "budget.csv")) %>%
     names_to = "as_task_bins",       # New column for variable names
     values_to = "hours"              # New column for values
   ) %>% 
-  group_by(station, year_month, as_task_bins) %>% 
+  group_by(station, department, year_month, as_task_bins) %>% 
   mutate(hours = sum(hours)) %>% 
   reframe(
           "Forecast Hours" = round(hours/days_in_month, 0)) %>% 
-  distinct()
+  distinct() %>% 
+  filter(!is.na(department))
 
 
 agg_data <- tasks_binned_as %>%
   mutate(year_month = format(work_summary_work_date, "%Y-%m")) %>%
-  group_by(work_summary_work_date,year_month, as_task_bins, broad_cat, station) %>% # add work group
+  group_by(work_summary_work_date,year_month, as_task_bins, broad_cat, station, department) %>% # add work group
   reframe("Actual Hours" = as.integer(sum(work_detail_hours))) %>% 
-  left_join(forecast_data)
+  left_join(forecast_data, by = c("year_month", "as_task_bins", "station", "department"))
 
 task_bins_mapping <- as_bin_key %>%
   select("AS Categories", broad_cat) %>% 
@@ -337,13 +352,16 @@ full_dates_task_bins <- expand.grid(
   work_summary_work_date = unique(agg_data$work_summary_work_date),
   as_task_bins = unique(task_bins_mapping$as_task_bins),
   station = unique(agg_data$station),
+  department = unique(agg_data$department),
   stringsAsFactors = FALSE
 ) %>%
   left_join(task_bins_mapping, by = "as_task_bins")  # Ensure task bins match their broad_cat
 
+year <- year(Sys.Date())
+
 # Join with the original data and fill missing hours with zero
 agg_data_complete <- full_dates_task_bins %>%
-  left_join(agg_data, by = c("work_summary_work_date", "as_task_bins", "broad_cat", "station")) %>% 
+  left_join(agg_data, by = c("work_summary_work_date", "as_task_bins", "broad_cat", "station", "department")) %>% 
     mutate(
     year_month = ifelse(is.na(year_month), 
                         format(as.Date(work_summary_work_date), "%Y-%m"), 
@@ -356,7 +374,8 @@ agg_data_complete <- full_dates_task_bins %>%
     cols = c(`Actual Hours`, `Forecast Hours`), # Specify the columns to pivot
     names_to = "Actual vs Forecast",                        # New column for the column names
     values_to = "hours"                        # New column for the values
-  )
+  ) %>% 
+  filter(year(work_summary_work_date) == year)
 
 
 write_xlsx(agg_data_complete, "Z:/OperationsResourcePlanningAnalysis/UTA_AO/daily_agg.xlsx")
