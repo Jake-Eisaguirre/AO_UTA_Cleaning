@@ -19,10 +19,6 @@ clean_static_data <- read_csv(here("data", "clean_static_data.csv")) %>%
          work_detail_start_time = as.POSIXct(work_detail_start_time, format = "%Y-%m-%dT%H:%M:%S"),
          work_detail_end_time = as.POSIXct(work_detail_end_time, format = "%Y-%m-%dT%H:%M:%S"))
 
-# Get list of files from the 2024 directory
-file_list <- list.files("//nas01/depts/Share/Airport Operations/UTAData/Archive/", 
-                        full.names = TRUE, recursive = TRUE, pattern = "\\.csv$")
-
 # Filter the files to exclude unwanted ones, such as files from 2022
 file_list <- list.files("//nas01/depts/Share/Airport Operations/UTAData/Archive/", pattern = "*.csv", full.names = TRUE, recursive = TRUE) %>%
   .[!grepl("AirportOps_Daily_Hours_Fake Data.csv$", .)] %>%
@@ -126,30 +122,34 @@ tasks_binned_as <- clean_static_data %>%
   filter(!is.na(department))
 
 
+forecast_file <- list.files("D:/StaffPlanner/Budget Headcount/Tableau Forecast Report", pattern = ".xlsx")
+forecast_data_file_path <- "D:/StaffPlanner/Budget Headcount/Tableau Forecast Report/"
 
-forecast_data <- read_csv(here("data", "budget.csv")) %>% 
-  clean_names()  %>% 
-  mutate(month = format(mdy(month), "%Y-%m")) %>% 
-  select(-matches("pt|ft")) %>% 
-  rename(year_month = month) %>% 
-  select(station, department, year_month, days_in_month, 
-         total_hours_bud, total_sick_hours_bud, total_vac_hours_bud, total_training_hours_bud) %>% 
-  rename("Regular Hours" = total_hours_bud,
-         "Sick Leave" = total_sick_hours_bud,
-         "Vacation" = total_vac_hours_bud,
-         "Training" = total_training_hours_bud) %>% 
-  mutate("Actual vs Forecasted" = "Forecasted") %>% 
-  pivot_longer(
-    cols = `Regular Hours`:Training, # Select columns to pivot
-    names_to = "as_task_bins",       # New column for variable names
-    values_to = "hours"              # New column for values
-  ) %>% 
-  group_by(station, department, year_month, as_task_bins) %>% 
-  mutate(hours = sum(hours)) %>% 
-  reframe(
-    "Forecast Hours" = round(hours/days_in_month, 0)) %>% 
-  distinct() %>% 
-  filter(!is.na(department))
+forecast_data <- read_xlsx(paste0(forecast_data_file_path,forecast_file), sheet = "")
+
+# forecast_data <- read_csv(here("data", "budget.csv")) %>% 
+#   clean_names()  %>% 
+#   mutate(month = format(mdy(month), "%Y-%m")) %>% 
+#   select(-matches("pt|ft")) %>% 
+#   rename(year_month = month) %>% 
+#   select(station, department, year_month, days_in_month, 
+#          total_hours_bud, total_sick_hours_bud, total_vac_hours_bud, total_training_hours_bud) %>% 
+#   rename("Regular Hours" = total_hours_bud,
+#          "Sick Leave" = total_sick_hours_bud,
+#          "Vacation" = total_vac_hours_bud,
+#          "Training" = total_training_hours_bud) %>% 
+#   mutate("Actual vs Forecasted" = "Forecasted") %>% 
+#   pivot_longer(
+#     cols = `Regular Hours`:Training, # Select columns to pivot
+#     names_to = "as_task_bins",       # New column for variable names
+#     values_to = "hours"              # New column for values
+#   ) %>% 
+#   group_by(station, department, year_month, as_task_bins) %>% 
+#   mutate(hours = sum(hours)) %>% 
+#   reframe(
+#     "Forecast Hours" = round(hours/days_in_month, 0)) %>% 
+#   distinct() %>% 
+#   filter(!is.na(department))
 
 
 agg_data <- tasks_binned_as %>%
