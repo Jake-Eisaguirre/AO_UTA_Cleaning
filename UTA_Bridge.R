@@ -90,8 +90,6 @@ write.csv(clean_static_data, here("data", "updated_clean_static_data.csv"), row.
 
 ############# Combine Actual and Forecasted Data ###############
 
-
-
 clean_static_data <- read_csv(here("data", "updated_clean_static_data.csv"))
 
 as_bin_key <- read_csv(here("masters", "as_bin_key.csv")) %>% 
@@ -122,34 +120,89 @@ tasks_binned_as <- clean_static_data %>%
   filter(!is.na(department))
 
 
-forecast_file <- list.files("D:/StaffPlanner/Budget Headcount/Tableau Forecast Report", pattern = ".xlsx")
+# Define the directory path
 forecast_data_file_path <- "D:/StaffPlanner/Budget Headcount/Tableau Forecast Report/"
 
-forecast_data <- read_xlsx(paste0(forecast_data_file_path,forecast_file), sheet = "")
+# List all .xlsx files in the directory
+forecast_files <- list.files(path = forecast_data_file_path, pattern = "\\.csv$", full.names = TRUE)
 
-# forecast_data <- read_csv(here("data", "budget.csv")) %>% 
-#   clean_names()  %>% 
-#   mutate(month = format(mdy(month), "%Y-%m")) %>% 
-#   select(-matches("pt|ft")) %>% 
-#   rename(year_month = month) %>% 
-#   select(station, department, year_month, days_in_month, 
-#          total_hours_bud, total_sick_hours_bud, total_vac_hours_bud, total_training_hours_bud) %>% 
-#   rename("Regular Hours" = total_hours_bud,
-#          "Sick Leave" = total_sick_hours_bud,
-#          "Vacation" = total_vac_hours_bud,
-#          "Training" = total_training_hours_bud) %>% 
-#   mutate("Actual vs Forecasted" = "Forecasted") %>% 
-#   pivot_longer(
-#     cols = `Regular Hours`:Training, # Select columns to pivot
-#     names_to = "as_task_bins",       # New column for variable names
-#     values_to = "hours"              # New column for values
-#   ) %>% 
-#   group_by(station, department, year_month, as_task_bins) %>% 
-#   mutate(hours = sum(hours)) %>% 
-#   reframe(
-#     "Forecast Hours" = round(hours/days_in_month, 0)) %>% 
-#   distinct() %>% 
-#   filter(!is.na(department))
+# Loop through each file and assign it to a new object
+for (forecast_file in forecast_files) {
+  # Generate a valid object name based on the file name (remove directory and extension)
+  object_name <- gsub("\\.csv$", "", basename(forecast_file))
+  object_name <- make.names(object_name) # Ensure it's a valid R variable name
+  
+  # Read the data and assign to the new object
+  assign(object_name, read_csv(forecast_file))
+}
+
+
+f_2025 <- X2025_forecast %>% 
+  pivot_longer(
+    cols = starts_with(c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")),
+    names_to = "year_month",
+    values_to = "value"
+  ) %>%
+  mutate(
+    year_month = format(as.Date(paste0("01-", year_month), format = "%d-%b-%y"), "%Y-%m"),
+    days_in_month = days_in_month(ymd(paste0(year_month, "-01")))
+  ) %>% 
+  mutate(
+    Department = if_else(Department == "Wt/Bal", "WEIGHT", Department),
+    Department = if_else(Department == "LS", "LINE SERVICEMAN", Department),
+    Department = if_else(Department == "Cabin", "CLEANER", Department),
+    Department = if_else(Department %in% c("CSA", "CSR"), "GS", Department),
+    Department = if_else(Department == "Ramp", "RAMP", Department)
+  ) %>% 
+  mutate(
+    Category = if_else(Category == "Sick Hours", "Sick Leave", Category),
+    Category = if_else(Category == "Total Hours", "Regular Hours", Category),
+    Category = if_else(Category == "Cabin", "Cleaner", Category),
+  ) %>% 
+  rename(as_task_bins = Category)
+
+f_2024 <- X2024_forecast %>% 
+  pivot_longer(
+    cols = starts_with(c("24-Jan", "24-Feb", "24-Mar", "24-Apr", "24-May", "24-Jun", "24-Jul", "24-Aug", 
+                         "24-Sep", "24-Oct", "24-Nov", "24-Dec")),
+    names_to = "year_month",
+    values_to = "value"
+  ) %>%
+  mutate(
+    # Append "20" to convert "24-Jan" into "Jan-2024"
+    year_month = format(lubridate::my(paste0(substr(year_month, 4, 6), "-20", substr(year_month, 1, 2))), "%Y-%m"),
+    # Calculate the number of days in the month
+    days_in_month = lubridate::days_in_month(lubridate::ymd(paste0(year_month, "-01")))
+  ) %>% 
+    mutate(
+      Department = if_else(Department == "Wt/Bal", "WEIGHT", Department),
+      Department = if_else(Department == "LS", "LINE SERVICEMAN", Department),
+      Department = if_else(Department == "Cabin", "CLEANER", Department),
+      Department = if_else(Department %in% c("CSA", "CSR"), "GS", Department),
+      Department = if_else(Department == "Ramp", "RAMP", Department)
+    ) %>% 
+    mutate(
+      Category = if_else(Category == "Sick Hours", "Sick Leave", Category),
+      Category = if_else(Category == "Total Hours", "Regular Hours", Category),
+      Category = if_else(Category == "Cabin", "Cleaner", Category),
+    ) %>% 
+    rename(as_task_bins = Category)
+
+
+forecast_data <- rbind(f_2025, f_2024) %>%
+  mutate(
+    value = str_remove_all(value, ","),
+    value = as.integer(if_else(grepl("^[0-9]+$", value), value, NA_character_)) # Keep only numeric
+  ) %>%
+  group_by(Station, Department, year_month, as_task_bins) %>%
+  mutate(value = mean(value, na.rm = TRUE)) %>%
+  reframe(
+    "Forecast Hours" = round(value / days_in_month, 0)
+  ) %>%
+  distinct() %>% 
+  rename(station=Station,
+         department=Department) %>% 
+  filter(as_task_bins %in% c("Regular Hours", "Sick Leave", "Training", "Vacation"))
 
 
 agg_data <- tasks_binned_as %>%
@@ -197,7 +250,16 @@ agg_data_complete <- full_dates_task_bins %>%
     values_to = "hours"                        # New column for the values
   ) %>%
   # Filter for the last 12 months (current month + 11 historical months)
-  filter(work_summary_work_date >= start_date & work_summary_work_date <= end_date)
+  filter(work_summary_work_date >= start_date & work_summary_work_date <= end_date) %>% 
+  mutate(hours = if_else(as_task_bins %in% c("All Other",  "Holiday Not Worked",
+                                             "Overtime 1.5", "Overtime 2.0",
+                                             "Holiday Worked") & `Actual vs Forecast` == "Forecast Hours",
+                         NA,
+                         hours)) %>% 
+  mutate(as_task_bins = if_else(as_task_bins == "Regular Hours", "Regular", as_task_bins),
+         as_task_bins = if_else(as_task_bins == "Overtime 1.5", "OT 1.5", as_task_bins),
+         as_task_bins = if_else(as_task_bins == "Overtime 2.0", "OT 2.0", as_task_bins),
+         as_task_bins = if_else(as_task_bins == "Sick Leave", "Sick", as_task_bins))
 
 ############# End Combine Actual and Forecasted Data ###############
 
@@ -205,3 +267,58 @@ agg_data_complete <- full_dates_task_bins %>%
 ############# Push to Bridge ###############
 
 write_xlsx(agg_data_complete, "Z:/OperationsResourcePlanningAnalysis/UTA_AO/daily_agg.xlsx")
+
+worked_hours <- agg_data_complete %>% 
+  filter(broad_cat == "Worked Hours") %>% 
+  group_by(station, as_task_bins, department, broad_cat, year_month, `Actual vs Forecast`) %>%   
+  arrange(work_summary_work_date) %>%  # Ensure data is ordered by date for cumulative sum
+  mutate(mtd = round(cumsum(hours), 0)) %>%  # Cumulative sum for MTD calculation
+  ungroup() %>% 
+  group_by(station, as_task_bins, department, broad_cat, year_month) %>%   
+  mutate(
+    red_black = if_else(
+      `Actual vs Forecast` == "Actual Hours" & 
+        hours > hours[`Actual vs Forecast` == "Forecast Hours"],
+      "red",
+      "black"
+    )
+  ) %>% 
+  ungroup() %>% 
+  write_xlsx("Z:/OperationsResourcePlanningAnalysis/UTA_AO/worked_hours.xlsx")
+
+unworked_hours <- agg_data_complete %>% 
+  filter(broad_cat == "Unworked Hours") %>% 
+  group_by(station, as_task_bins, department, broad_cat, year_month, `Actual vs Forecast`) %>%   
+  arrange(work_summary_work_date) %>%  # Ensure data is ordered by date for cumulative sum
+  mutate(mtd = round(cumsum(hours), 0)) %>%  # Cumulative sum for MTD calculation
+  ungroup() %>% 
+  group_by(station, as_task_bins, department, broad_cat, year_month) %>%   
+  mutate(
+    red_black = if_else(
+      `Actual vs Forecast` == "Actual Hours" & 
+        hours > hours[`Actual vs Forecast` == "Forecast Hours"],
+      "red",
+      "black"
+    )
+  ) %>% 
+  ungroup() %>% 
+  write_xlsx("Z:/OperationsResourcePlanningAnalysis/UTA_AO/unworked_hours.xlsx")
+
+training_hours <- agg_data_complete %>% 
+  filter(broad_cat == "Training Hours") %>% 
+  group_by(station, as_task_bins, department, broad_cat, year_month, `Actual vs Forecast`) %>%   
+  arrange(work_summary_work_date) %>%  # Ensure data is ordered by date for cumulative sum
+  mutate(mtd = round(cumsum(hours), 0)) %>%  # Cumulative sum for MTD calculation
+  ungroup() %>% 
+  group_by(station, as_task_bins, department, broad_cat, year_month) %>%   
+  mutate(
+    red_black = if_else(
+      `Actual vs Forecast` == "Actual Hours" & 
+        hours > hours[`Actual vs Forecast` == "Forecast Hours"],
+      "red",
+      "black"
+    )
+  ) %>% 
+  ungroup() %>% 
+  write_xlsx("Z:/OperationsResourcePlanningAnalysis/UTA_AO/training_hours.xlsx")
+
